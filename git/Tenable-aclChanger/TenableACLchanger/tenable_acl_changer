@@ -1,0 +1,151 @@
+ write-host "This script will change ownership and permissions for selected scans`r
+in the Tenable IO environment. A valid Tenable IO user with the `"admin`"`r
+role must possess API keys for use in this script.`n`n-ben"
+write-host "use this script at your own risk" -ForegroundColor yellow
+
+$headers=@{}
+$headers.Add("Accept", "application/json")
+$headers.Add("Content-Type", "application/json")
+$accessKey=Read-Host "Please enter your a tenable admin user API accessKey"
+$secretKey=Read-host "Plesse enter your a tenable admin user API secretKey"
+$headers.Add("X-ApiKeys", "accessKey=$accessKey;secretKey=$secretKey")
+$modifyer="scans"
+$scope=Read-Host "This script will modify all or some of your scans. Please enter something to match for in your scans. [all] or [YourSearchTerm]"
+
+function ACLcalcScan {
+    param (
+        $aclScope,$perm
+    )
+    if ($perm -like "No-Access"){$perm="0"}
+    elseif ($perm -like "view"){$perm="16"}
+    elseif ($perm -like "control"){$perm="32"}
+    elseif ($perm -like "configure"){$perm="64"}
+    if ($aclScope -like "default"){
+        $type="default";
+        $owner=$display_name=$name=$id=""
+    }
+    else {
+        $owner="0"
+        $display_name="$($aclScope.name)"        
+        $name="$($aclScope.name)"
+        $id="$($aclScope.id)"
+        $type="group"
+    }
+
+    # ACL that will be added
+    $script:tempAclData=@{
+        permissions="$perm"
+        owner="$owner"
+        display_name="$display_name"
+        name="$name"
+        id="$id"
+        type="$type"
+    }
+
+    $script:acldata+=$tempAclData
+  
+}
+
+$ACLchangerChoice=Read-Host "Would you like to change ACLs on scans? [y/n]"
+if ($ACLchangerChoice -match "y"){
+    write-host "This script only supports adding ACLs to groups in Tenable IO at the moment..."
+    try {
+        $groups=Invoke-RestMethod -Uri "https://cloud.tenable.com/groups" -Method GET -Headers $headers -ErrorAction stop
+        write-host "SUCCESS : tenable API keys work and groups retrieved" -ForegroundColor Green
+    
+        # creating object that all changes will go into and later be converted to json. this one includes ACL array that will hold individual ACL hashtables.
+        $script:acldata=@()
+    
+        $groups.groups.name
+        $groupSelection=Read-Host "Please enter the group name you would like to add to an ACL on scans"
+        $group=$groups.groups |Where-Object {$_.name -like $groupSelection}
+        $scans=Invoke-RestMethod -Uri "https://cloud.tenable.com/$modifyer" -Method GET -Headers $headers -ErrorAction stop
+        write-host "Permissions available:`n No-Access`n View`n Control`n Configure"
+        $defaultPerm=read-host "What would you like default permissions to be?"
+        ACLcalcScan -aclScope default -perm $defaultPerm
+        $grpPerm=Read-Host "What would you like $groupselection permissions to be?"
+        ACLcalcScan -aclScope $group -perm $grpPerm
+    }
+    catch{
+        Clear-Variable accessKey,secretKey
+        write-host "FAIL : something didn't work. bye!"
+        write-host $error[0] -ForegroundColor Red
+        $error.clear()
+        break
+    }
+}
+elseif ($ACLchangerChoice -match "n"){
+    try {
+        $scans=Invoke-RestMethod -Uri "https://cloud.tenable.com/$modifyer" -Method GET -Headers $headers -ErrorAction stop
+        write-host "SUCCESS : tenable API keys work and $modifyer retrieved" -ForegroundColor Green
+    }
+    catch {
+        Clear-Variable accessKey,secretKey
+        write-host "FAIL : something didn't work when using the supplied API keys. bye!"
+        write-host $error[0] -ForegroundColor Red
+        $error.clear()
+        break
+    }    
+}
+
+
+$ownerUser=read-host "Please enter the email address for the account that will be owner for the $modifyer"
+$ownerUserid=Invoke-RestMethod -Uri "https://cloud.tenable.com/users" -Method GET -Headers $headers
+$ownerUserid=($ownerUserid.users| Where-Object {$_.email -match $owneruser}).id
+
+function LoopObjects {
+    param (
+        $owner,$scan,$jsonargs  
+    )
+    $tempScan=Invoke-RestMethod -Uri https://cloud.tenable.com/$modifyer/$($scan.id) -Method get -Headers $headers
+    $tempScanner=Invoke-RestMethod -Uri https://cloud.tenable.com/scanners -Method get -Headers $headers
+    $tempScanner=$tempScanner.scanners |Where-Object {$_.name -like "$($tempScan.info.scanner_name)"}
+    
+    $jsonargs.add("uuid","$($scan.template_uuid)")
+    $jsonargs.settings.add("name","$($scan.name)")
+    $jsonargs.settings.add("owner_id","$ownerUserid")
+    $jsonargs.settings.add("text_targets","$($tempscan.info.targets)")
+    $jsonargs.settings.add("scanner_id","$($tempscanner.id)")
+
+
+    $json = $jsonargs | ConvertTo-Json -Depth 99
+    ## this part actually modifies the scan to accept $tempdata settings
+    write-host "we were about to make changes..."
+
+    Invoke-RestMethod -Uri https://cloud.tenable.com/$modifyer/$($scan.schedule_uuid) -Headers $headers -Method Put -Body $json
+}
+
+## 
+## put something here that will parse for scans that will be in scope
+## >
+if ($scope -like "all"){
+    #go through all objects
+    write-host "found $($scans.count) scans..."
+    sleep 2
+} 
+else {
+    #go through stuff in scope only
+    $scans=$scans.scans |Where-Object {$_.name -match $scope}
+    write-host "found $($scans.count) scans ..."
+    sleep 2
+}
+
+foreach ($scan in $scans){
+    try{
+        write-host "working on $($scan.name)"
+        sleep 2
+        if ($null -eq $aclData){
+            $tempdata=@{settings=@{}}
+        }
+        elseif ($null -ne $aclData){
+            $tempdata=@{settings=@{acls=@()}}
+            $tempdata.settings.acls+=$aclData
+        }
+        LoopObjects -owner $ownerUserid -scan $scan -jsonargs $tempdata
+    }
+    catch{
+        write-host "failed on $($scan.name)"
+        write-host $error[0] -ForegroundColor Red
+        sleep 5
+    }
+}
