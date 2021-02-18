@@ -8,7 +8,6 @@
 ## and wash your hands!
 #####################
 
-##################### adding .net bypass for ssl cert checking
 try{
 add-type @"
     using System.Net;
@@ -26,8 +25,9 @@ add-type @"
 catch{
     write-host "Could not bypass SSL certificate checking. If errors occur, please add PAN device certificate to this computer's trusted certificates store." -ForegroundColor yellow
 }
-#####################
 
+##################### bypassing TLS strict enforcement : not needed in all environments
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls12
 
 ##################### file
 write-host "This script will consume ip address data in 'data.csv' which needs to be located in the current working directory."
@@ -52,7 +52,10 @@ try {
     Clear-Variable cred -ErrorAction SilentlyContinue
     $headers=@{'X-PAN-KEY' = $key}
     $headers.Add("Content-Type", "application/json")
-    $panOSversion="v" + (((Invoke-RestMethod -Uri "https://$panHost/api/?type=version&key=$($key)" -Method post).response.result."sw-version").split('.')[0,1] -join '.')
+    $panOSversion=(((Invoke-RestMethod -Uri "https://$panHost/api/?type=version&key=$($key)" -Method post).response.result."sw-version").split('.')[0,1] -join '.')
+    if ($panOSversion -notlike "9.0"){
+        $panOSversion= "v" + $panOSversion
+    }
     write-host "SUCCESS : good hostname and credential." -ForegroundColor Green
 }
 catch{
@@ -63,7 +66,7 @@ catch{
     break
 }
 
-##################### queryPan is what will interact with restAPI. This isn't designed to work with non panorma devices yet.
+##################### queryPan is what will interact with restAPI. This isn't designed to work with non panorama devices yet.
 function queryPAN {
     ## this should include api get
     [CmdletBinding()]
@@ -72,9 +75,17 @@ function queryPAN {
             [String[]]$APIargs,
             [String[]]$Method,
             [String[]]$Body,
-            [String[]]$objPath
+            [String[]]$objPath,
+            [String[]]$obj_name
         )
-    Invoke-RestMethod -Uri "https://$panHost/restapi/$panOSversion/$objPath`?$apiargs" -Headers $headers -Method $Method -Body $Body
+    try{
+        Invoke-RestMethod -Uri "https://$panHost/restapi/$panOSversion/$objPath`?$apiargs" -Headers $headers -Method $Method -Body $Body
+        write-host "success on $obj_name"
+    }
+    catch{
+        write-host "failed on $obj_name" -ForegroundColor red
+        write-host $error[0] -ForegroundColor red
+    }
 }
 
 ##################### identify if target device is FW or Panorama. Using XML api here for some reason.
@@ -126,7 +137,7 @@ if ($null -ne $panorama_DGs){
         $switchNames+=$name_S
 
         # set object in panorama
-        queryPAN -APIargs "name=$name_S&location=device-group&device-group=$source_DG" -Method "post" -body $body -objPath "Objects/Addresses"
+        queryPAN -APIargs "name=$name_S&location=device-group&device-group=$source_DG" -Method "post" -body $body -objPath "Objects/Addresses" -obj_name $name_S
 
         ## Set wireless switch network objects for each school
         $ip_W=$line.ipaddr.split('.')
@@ -144,8 +155,7 @@ if ($null -ne $panorama_DGs){
         $wirelessSwitchNames+=$name_W
 
         # set object in panorama
-        queryPAN -APIargs "name=$name_W&location=device-group&device-group=$source_DG" -Method "post" -body $body -objPath "Objects/Addresses"
-
+        queryPAN -APIargs "name=$name_W&location=device-group&device-group=$source_DG" -Method "post" -body $body -objPath "Objects/Addresses" -obj_name $name_W
     }
     
     ##################### Address groups...
@@ -158,7 +168,7 @@ if ($null -ne $panorama_DGs){
     $body=$body | ConvertTo-Json -Depth 99
 
     # set address group object in panorama
-    queryPAN -APIargs "name=JSD_SCHOOL_SWITCHES&location=device-group&device-group=$source_DG" -Method "post" -body $body -objPath "Objects/AddressGroups"
+    queryPAN -APIargs "name=JSD_SCHOOL_SWITCHES&location=device-group&device-group=$source_DG" -Method "post" -body $body -objPath "Objects/AddressGroups" -obj_name "JSD_SCHOOL_SWITCHES"
 
     ## wireless switch addr groups...
     $body=@{entry=@{static=@()}}
@@ -169,7 +179,7 @@ if ($null -ne $panorama_DGs){
     $body=$body | ConvertTo-Json -Depth 99
 
     # set address group object in panorama
-    queryPAN -APIargs "name=JSD_SCHOOL_WIRELESS_SWITCHES&location=device-group&device-group=$source_DG" -Method "post" -body $body -objPath "Objects/AddressGroups"
+    queryPAN -APIargs "name=JSD_SCHOOL_WIRELESS_SWITCHES&location=device-group&device-group=$source_DG" -Method "post" -body $body -objPath "Objects/AddressGroups" -obj_name "JSD_SCHOOL_WIRELESS_SWITCHES"
 
     Clear-Variable panorama_DGs,key
     write-host "done!"
