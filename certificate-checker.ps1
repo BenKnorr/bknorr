@@ -1,6 +1,7 @@
 <#
     .DESCRIPTION
     Outputs the SSL protocols that the client is able to successfully use to connect to a server.
+    NO VALIDATION IS DONE ON ANY CERTIFICATES -ben
 
     .PARAMETER ComputerName
     The name of the remote computer to connect to.
@@ -66,7 +67,7 @@ function Test-SslProtocol {
             $Socket.Connect($ComputerName, $Port)
             try {
                 $NetStream = New-Object System.Net.Sockets.NetworkStream($Socket, $true)
-                $SslStream = New-Object System.Net.Security.SslStream($NetStream, $true)
+                $SslStream = New-Object System.Net.Security.SslStream($NetStream, $true, {$true} )
                 $SslStream.AuthenticateAsClient($ComputerName,  $null, $ProtocolName, $false )
                 $RemoteCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]$SslStream.RemoteCertificate
                 $ProtocolStatus["KeyLength"] = $RemoteCertificate.PublicKey.Key.KeySize
@@ -80,5 +81,6 @@ function Test-SslProtocol {
             }
         }
         [PSCustomObject]$ProtocolStatus
+        write-host "No certificate validation checking has been performed." -ForegroundColor red
     }
 } # function Test-SslProtocol
