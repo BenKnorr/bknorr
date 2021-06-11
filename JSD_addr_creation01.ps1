@@ -122,10 +122,15 @@ if ($null -ne $panorama_DGs){
     ##################### walking through each line in csv file, getting info for each addr and creating address individual address objects
     foreach ($line in $data){
         ## Set switch network objects for each school
+        # splitting the ip address in the most inefficient way possible so we can change the value of an octet in next step
         $ip_S=$line.ipaddr.split('.')
+        # changing third octet to value in quotes
         $ip_S[2]="22"
+        # putting it back together into ip address in CIDR notation (change CIDR as needed)
         $ip_S=$($ip_S -join '.')+"/24"
+        # assigning IP addr description
         $desc_S="$($line.LongName) SWITCHES"
+        # assigning IP addr name
         $name_S="$($line.schoolID)_SWITCHES"
 
         $body=@{entry=@{}}
@@ -138,12 +143,18 @@ if ($null -ne $panorama_DGs){
 
         # set object in panorama
         queryPAN -APIargs "name=$name_S&location=device-group&device-group=$source_DG" -Method "post" -body $body -objPath "Objects/Addresses" -obj_name $name_S
+        ## end of switch address section
 
         ## Set wireless switch network objects for each school
+        # splitting the ip address in the most inefficient way possible so we can change the value of an octet in next step        
         $ip_W=$line.ipaddr.split('.')
+        # changing third octet to value in quotes
         $ip_W[2]="23"
+        # putting it back together into ip address in CIDR notation (change CIDR as needed)
         $ip_W=$($ip_W -join '.')+"/24"
+        # assigning IP addr description
         $desc_W="$($line.LongName) WIRELESS SWITCHES"
+        # assigning IP addr name
         $name_W="$($line.schoolID)_WIRELESS_SWITCHES"
 
         $body=@{entry=@{}}
@@ -156,6 +167,7 @@ if ($null -ne $panorama_DGs){
 
         # set object in panorama
         queryPAN -APIargs "name=$name_W&location=device-group&device-group=$source_DG" -Method "post" -body $body -objPath "Objects/Addresses" -obj_name $name_W
+        ## end of wireless address section
     }
     
     ##################### Address groups...
@@ -169,6 +181,7 @@ if ($null -ne $panorama_DGs){
 
     # set address group object in panorama
     queryPAN -APIargs "name=JSD_SCHOOL_SWITCHES&location=device-group&device-group=$source_DG" -Method "post" -body $body -objPath "Objects/AddressGroups" -obj_name "JSD_SCHOOL_SWITCHES"
+    ## end of switch addr groups...
 
     ## wireless switch addr groups...
     $body=@{entry=@{static=@()}}
@@ -180,6 +193,7 @@ if ($null -ne $panorama_DGs){
 
     # set address group object in panorama
     queryPAN -APIargs "name=JSD_SCHOOL_WIRELESS_SWITCHES&location=device-group&device-group=$source_DG" -Method "post" -body $body -objPath "Objects/AddressGroups" -obj_name "JSD_SCHOOL_WIRELESS_SWITCHES"
+    ## end of wireless switch addr groups...
 
     Clear-Variable panorama_DGs,key
     write-host "done!"
