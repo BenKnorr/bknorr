@@ -31,6 +31,7 @@ catch{
 
 ##################### file
 write-host "This script will consume ip address data in 'data.csv' which needs to be located in the current working directory."
+write-host "`n current supported fields are`nschoolID`nShortName`nLongName`nipaddr" -ForegroundColor Green
 sleep 5
 try{
     Test-Path -Path data.csv -ErrorAction Stop
