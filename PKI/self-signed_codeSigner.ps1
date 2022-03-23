@@ -7,7 +7,7 @@
 ##     -run this script and use "signScripts" function to sign any powershell scripts/modules.     
 ##       examples:
 ##     signScripts yourPowershellScript.ps1
-##     signScripts c:\users\joeuser\powershellscript.ps1m
+##     signScripts -scriptToSign c:\users\joeuser\powershellscript.ps1m
 ##
 ## 
 ## use at your own risk!
@@ -22,8 +22,8 @@ function signScripts {
     [string[]]$scriptToSign
     )
 
-    $ben=Set-AuthenticodeSignature -Certificate (Get-ChildItem Cert:\LocalMachine\My -CodeSigningCert | Sort-Object -Descending -Property NotBefore)[0] -FilePath $scriptToSign -TimestampServer "http://timestamp.digicert.com"
-    Write-Output $ben
+    $signscript=Set-AuthenticodeSignature -Certificate (Get-ChildItem Cert:\LocalMachine\My -CodeSigningCert | Sort-Object -Descending -Property NotBefore)[0] -FilePath $scriptToSign -TimestampServer "http://timestamp.digicert.com"
+    write-output $signscript
 }
 
 write-host "do you want to create a new self-signed code signing cert? (y/n): " -ForegroundColor Yellow -NoNewline
@@ -65,4 +65,6 @@ if ($selector -match "y"){
         write-output $error[0]
     }
 }
-write-host "Digitally sign scripts using the `"signScripts`" function." -ForegroundColor Green 
+write-host "Digitally sign scripts using the `"signScripts`" function." -ForegroundColor Green
+
+ 
