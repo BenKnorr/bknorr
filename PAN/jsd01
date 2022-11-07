@@ -1,0 +1,14 @@
+## test file to check module functionality! ##
+
+Import-Module /Users/bknorr/Documents/GitHub/bknorr/PAN/ben_PAN.psm1 -Force
+
+##############################################################
+## required params that need to be gathered in this script
+## $pan1 , $cred1 , $pan2 , $cred2
+##############################################################
+
+write-host "What is your IP or hostname of PAN that you want to work with?" -ForegroundColor yellow -NoNewline
+$pan1=Read-Host
+Get-PanAPIkey -pan1 $pan1
+
+$dgs=invoke-panAPI -headers $headers1 -Method get -objPath 'Panorama/DeviceGroups'
