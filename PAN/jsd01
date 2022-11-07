@@ -1,14 +1,407 @@
 ## test file to check module functionality! ##
 
-Import-Module /Users/bknorr/Documents/GitHub/bknorr/PAN/ben_PAN.psm1 -Force
+###########
+##########
+#########
+########
+#######
+######
+#####
+
+################
+################
+
+$global:headers1=@{}
+$global:panosversion1=""
+
+function Get-LocalOS {
+    ###> this function is to bypass certificate validation since many newly configured PAN devices do not have proper certs yet.
+
+    $localENV=get-childitem -path env:
+    $script:certValidation=@{}
+
+    ###> this first block is for Windows PCs 
+    if ($localENV | Where-Object {($_.name -like "OS") -and  ($_.value -match "Windows")}){
+        # this is a windows host
+        add-type @"
+    using System.Net;
+    using System.Security.Cryptography.X509Certificates;
+    public class TrustAllCertsPolicy : ICertificatePolicy {
+        public bool CheckValidationResult(
+            ServicePoint srvPoint, X509Certificate certificate,
+            WebRequest request, int certificateProblem) {
+            return true;
+        }
+    }
+"@
+[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy        
+    }
+    else{
+        ###> assuming mac or linux host (mac does not have any "OS" property in env)
+        $script:certValidation=@{SkipCertificateCheck=$true}
+    }
+}
+
+function Get-PanAPIkey {
+    ###> this function gets the API key, sets up headers that will be used in query-PAN
+    [CmdletBinding()]
+    param(
+        [Parameter(ValueFromPipeline = $true)]
+        #[SecureString] $cred1,
+        [String[]]$pan1
+    )
+    Get-LocalOS
+    $cred1=Get-Credential -Message "Please enter a valid user/password with API access to your PAN device : $pan1"
+    #Get-PANcred($pan1)
+    try {
+        $global:key1=(Invoke-RestMethod @certvalidation -Uri "https://$pan1/api/?type=keygen&user=$($cred1.userName)&password=$($cred1.GetNetworkCredential().password)" -Method post).response.result.key
+        # $global:headers1=@{'X-PAN-KEY' = $key1}
+        # $global:headers1.Add("Content-Type", "application/json")
+        
+        $get=(Invoke-RestMethod @certvalidation -Uri "https://$pan1/api/?type=version&key=$($key1)" -Method post).response.result
+        
+        $global:panOSversion1=($get)."sw-version".split('.')[0,1] -join '.'
+        if ($panOSversion1 -notlike "9.0"){
+            $global:panOSversion1= "v" + $panOSversion1
+        }
+
+        $panorama=@('M-100','M-300','M-500','panorama','Panorama')
+        if ($panorama -notcontains $get.model){
+            write-host "ALERT : this script is designed for use with Panorama. Your model is `'$($get.model)`'" -ForegroundColor Red
+        }
+
+        write-host "SUCCESS : good hostname and credential." -ForegroundColor Green
+    }
+    catch {
+        write-host "FAIL : something didn't work. bye!"
+        write-host $error[0] -ForegroundColor Red
+        $error.clear()
+        break
+    }
+}
+
+function Invoke-panXMLapi {
+    ###> this is used for XML API requests
+    ### https://docs.paloaltonetworks.com/pan-os/10-1/pan-os-panorama-api/about-the-pan-os-xml-api/structure-of-a-pan-os-xml-api-request.html#id93d1e502-4e90-414f-8179-c135811f3c28
+    
+    [CmdletBinding()]
+        param(
+            [Parameter(ValueFromPipeline = $true)]
+            [String[]]$Type,        ## config, export, import, commit, op, etc.
+            [String[]]$Action,      ## get (read candidate), set , edit , delete, etc.
+            [String[]]$cmd,         ## used if type is "op"
+            [String[]]$category,    
+            #[String[]]$Headers1,
+            [String[]]$Pan1,
+            [String[]]$xPath,
+            [String[]]$ExportFile
+        )
+ 
+    if (!($null -eq $cmd)){$cmd="&cmd=" + "$cmd"}
+    if (!($null -eq $xpath)){$xpath="&xpath=" + "$xpath"}
+    if (!($null -eq $action)){$action="&action=" + "$action"}
+    if (!($null -eq $category)){$category="&category=" + "$category"}
+
+    try{
+        
+        if ($null -ne $ExportFile){
+            ## this is only used if a file/result is going to be exported.
+            [xml]$apiResult=""
+        }
+        else {}
+
+<### March21 >
+        ## check for HA
+        write-host "checking for HA..."
+        $apiResult=Invoke-RestMethod @certvalidation -Uri "https://$pan1/api/?type=op&cmd=<show><high-availability><state></state></high-availability></show>" -Headers $headers1 -ErrorAction Stop
+        if ($apiResult.response.result.enabled -match "yes"){
+            ## this FW has HA enabled...
+            write-host "$pan1 has HA enabled."
+            return $apiResult
+            $pan1HAenabled=$true
+        }
+        else{}
+## March21 < #>
+
+        $apiResult=Invoke-RestMethod @certvalidation -Uri "https://$pan1/api/?type=$type$category$action$cmd$xpath" -Headers $headers1 -ErrorAction Stop
+        if ($apiResult.response.code -match "[20-19]"){
+            ##19 or 20 are successful api status when a job is successfully queued.
+            $cmd="&cmd=<show><jobs><id>$($apiResult.response.result.job)</id></jobs></show>"
+            do{
+                $apiResult=Invoke-RestMethod @certvalidation -Uri "https://$pan1/api/?type=$type$category$action$cmd$xpath" -Headers $headers1
+                sleep 2
+                write-host "Checking job ($($apiResult.response.result.job.id))....$($apiResult.response.result.job.progress)%"
+            }
+            until ($apiResult.response.result.job.status -eq "FIN")
+            write-host "Job $($apiResult.response.result.job.id) complete."
+        }
+        elseif ($null -ne $ExportFile){
+            ## saving an export if $exportfile is defined
+            $apiresult.save($ExportFile)
+            write-host "saved $ExportFile successfully."
+        }
+        elseif (($null -eq $apiResult.response.code) -and ($apiResult.response.status -like "success")){
+            write-host "success on $cmd"
+        }
+        else{
+            write-host "something else happened with $cmd .... probably should stop here...."
+        }
+    }
+
+    catch{
+        write-host "failed on $obj_name" -ForegroundColor red
+        write-host $error[0] -ForegroundColor red
+    } 
+    
+}
+
+##################### queryPan is what will interact with restAPI. This isn't designed to work with non panorama devices yet.
+function invoke-panAPI {
+    ## this should include api get
+    [CmdletBinding()]
+        param(
+            [Parameter(ValueFromPipeline = $true)]
+            [String[]]$APIargs,
+            [String[]]$Method,
+            $Body,
+            [String[]]$objPath,
+            [String[]]$obj_name,
+            [String[]]$panOSversion,
+            [String[]]$Pan1#,
+            #[String[]]$headers
+        )
+    Clear-Variable restResult -scope global
+    $headersREST=@{"X-PAN-KEY" = "$key1"}
+    $headersREST.add("Content-Type" , "application/json")
+    try{
+        $global:restResult=Invoke-RestMethod @certvalidation -Uri "https://$pan1/restapi/$panOSversion1/$objPath`?$apiargs" -Headers $headersREST -Method $Method -Body $Body
+        write-host "SUCCESS : on $objPath" -ForegroundColor Green
+    }
+    catch{
+        write-host "FAILED : on $objPath" -ForegroundColor red
+        write-host $error[0] -ForegroundColor red
+        Clear-Variable restResult -Scope global
+    }
+}
+
+function processRule{
+    [CmdletBinding()]
+    param(
+        [Parameter(ValueFromPipeline = $true)]
+        [String[]]$APIargs,
+        [String[]]$Method,
+        $Body,
+        [String[]]$objPath,
+        [String[]]$obj_name,
+        [String[]]$panOSversion,
+        [String[]]$Pan1,
+        [String[]]$externalZone
+    )
+
+    $headersREST=@{"X-PAN-KEY" = "$key1"}
+    $headersREST.add("Content-Type" , "application/json")
+
+    $body.entry.psobject.Properties.Remove('@uuid')
+    $body.entry.psobject.Properties.Remove('@location')
+    $body.entry.psobject.Properties.Remove('@device-group')
+    $body.entry.psobject.Properties.Remove('@loc')
+    
+    $body=$body |ConvertTo-Json -Depth 99
+
+    try{
+        Invoke-RestMethod @certvalidation -Uri "https://$pan1/restapi/$panOSversion1/$objPath`?$apiargs" -Headers $headersREST -Method $Method -Body $Body
+        write-host "SUCCESS : on $objPath" -ForegroundColor Green
+    }
+    catch{
+        write-host "FAILED : on $objPath" -ForegroundColor red
+        write-host $error[0] -ForegroundColor red
+        Clear-Variable restResult -Scope global
+    }
+
+
+}
+
 
 ##############################################################
 ## required params that need to be gathered in this script
 ## $pan1 , $cred1 , $pan2 , $cred2
 ##############################################################
 
-write-host "What is your IP or hostname of PAN that you want to work with?" -ForegroundColor yellow -NoNewline
+write-host " What is your IP or hostname of PAN that you want to work with? : " -ForegroundColor yellow -NoNewline
 $pan1=Read-Host
 Get-PanAPIkey -pan1 $pan1
 
-$dgs=invoke-panAPI -headers $headers1 -Method get -objPath 'Panorama/DeviceGroups'
+## JSD STUFF >>  ###
+write-host "INFO : this iteration of the script will modify security policies to attach to previously updated security profiles." -ForegroundColor darkyellow
+## << JSD STUFF  ###
+
+#get devicegroups...
+invoke-panAPI -Method get -panOSversion $panosversion1 -Pan1 $pan1 -objPath 'Panorama/DeviceGroups'
+$restResult.result.entry.'@name'
+write-host " Please enter a device-group to work with (or `'shared`') : " -ForegroundColor yellow -NoNewline
+$dg=Read-Host
+
+#get templates that are associated with DG...
+invoke-panAPI -Method get -panOSversion $panosversion1 -Pan1 $pan1 -objPath 'Panorama/Templates'
+$restResult.result.entry.'@name'
+write-host " Please enter a template that contains the zones associated with your target firewalls? : " -ForegroundColor yellow -NoNewline
+$template=Read-Host
+
+#get zones to define external...
+invoke-panAPI -Method get -panOSversion $panosversion1 -Pan1 $pan1 -objPath 'Network/Zones' -APIargs "location=template&template=$template&vsys=vsys1"
+$restResult.result.entry.'@name'
+write-host " Please enter your outside zone : " -ForegroundColor yellow -NoNewline
+$outsideZone=read-host
+
+#process security rules
+# this assumes the names of the security profile groups begin with "PAN-" and are based on naming syntax from iron skillet baselines
+# tags are added for every rule that is processed : internal, outbound, inbound
+$profileGroupOutbound='PAN-Outbound'
+$profileGroupInbound='PAN-Inbound'
+$profileGroupInternal='PAN-Internal'
+
+foreach ($prepost in @("Policies/SecurityPreRules","Policies/SecurityPostRules")){
+    if ($dg -match 'shared'){
+        invoke-panAPI -Method get -panOSversion $panosversion1 -Pan1 $pan1 -objPath $prepost -APIargs "location=shared"
+        foreach ($rule in ($restResult.result.entry |Where-Object {($_.action -like 'allow')})){
+            if ($rule.to.member -match $outsideZone){
+                #outbound
+                write-host "$($rule.'@name') , $($rule.from.member) to $($rule.to.member)" -ForegroundColor cyan
+                $body=[pscustomobject]@{entry=$rule}
+                $body.entry | Add-Member -MemberType NoteProperty -Name "profile-setting" -Value @{} -Force
+
+                if ($null -eq $body.entry.tag){
+                    $body.entry | Add-Member -MemberType NoteProperty -Name "tag" -Value @{member=@("Outbound")}
+                }
+                elseif ($body.entry.tag.member -match "Outbound"){
+                    #tag already added
+                }
+                else{
+                    $body.entry.tag.member=$body.entry.tag.member+"Outbound"
+                }
+
+                $body.entry.'profile-setting'=[PScustomobject]@{group=[PScustomobject]@{member=@($profileGroupOutbound)}}
+                processRule -Method put -objPath $prepost -panOSversion $panosversion1 -Pan1 $pan1 -APIargs "location=shared&name=$($rule.'@name')" -body $body
+            }
+            elseif ($rule.from.member -match $outsideZone){
+                #inbound
+                write-host "$($rule.'@name') , $($rule.from.member) to $($rule.to.member)" -ForegroundColor Red
+                $body=[pscustomobject]@{entry=$rule}
+                $body.entry | Add-Member -MemberType NoteProperty -Name "profile-setting" -Value @{} -Force
+                
+                if ($null -eq $body.entry.tag){
+                    $body.entry | Add-Member -MemberType NoteProperty -Name "tag" -Value @{member=@("Inbound")}
+                }
+                elseif ($body.entry.tag.member -match "Inbound"){
+                    #tag already added
+                }
+                else{
+                    $body.entry.tag.member=$body.entry.tag.member+"Inbound"
+                }
+
+                $body.entry.'profile-setting'=[PScustomobject]@{group=[PScustomobject]@{member=@($profileGroupInbound)}}
+                processRule -Method put -objPath $prepost -panOSversion $panosversion1 -Pan1 $pan1 -APIargs "location=shared&name=$($rule.'@name')" -body $body
+            }
+            else{
+                #internal
+                write-host "$($rule.'@name') , $($rule.from.member) to $($rule.to.member)" -ForegroundColor yellow
+                $body=[pscustomobject]@{entry=$rule}
+                $body.entry | Add-Member -MemberType NoteProperty -Name "profile-setting" -Value @{} -Force
+                
+                if ($null -eq $body.entry.tag){
+                    $body.entry | Add-Member -MemberType NoteProperty -Name "tag" -Value @{member=@("Internal")}
+                }
+                elseif ($body.entry.tag.member -match "Internal"){
+                    #tag already added
+                }
+                else{
+                    $body.entry.tag.member=$body.entry.tag.member+"Internal"
+                }
+
+                $body.entry.'profile-setting'=[PScustomobject]@{group=[PScustomobject]@{member=@($profileGroupInternal)}}
+                processRule -Method put -objPath $prepost -panOSversion $panosversion1 -Pan1 $pan1 -APIargs "location=shared&name=$($rule.'@name')" -body $body
+            }
+        }    
+    }
+    else {
+        invoke-panAPI -Method get -panOSversion $panosversion1 -Pan1 $pan1 -objPath $prepost -APIargs "location=device-group&device-group=$dg"
+        foreach ($rule in ($restResult.result.entry |Where-Object {($_.action -like 'allow')})){
+            if ($rule.to.member -contains $outsideZone){
+                #outbound
+                write-host "$($rule.'@name') , $($rule.from.member) to $($rule.to.member)" -ForegroundColor cyan
+                $body=[pscustomobject]@{entry=$rule}
+                $body.entry | Add-Member -MemberType NoteProperty -Name "profile-setting" -Value @{} -Force
+
+                if ($null -eq $body.entry.tag){
+                    $body.entry | Add-Member -MemberType NoteProperty -Name "tag" -Value @{member=@("Outbound")}
+                }
+                elseif ($body.entry.tag.member -match "Outbound"){
+                    #tag already added
+                }
+                else{
+                    $body.entry.tag.member=$body.entry.tag.member+"Outbound"
+                }
+
+                $body.entry.'profile-setting'=[PScustomobject]@{group=[PScustomobject]@{member=@($profileGroupOutbound)}}
+                processRule -Method put -objPath $prepost -panOSversion $panosversion1 -Pan1 $pan1 -APIargs "location=device-group&device-group=$dg&name=$($rule.'@name')" -body $body
+            }
+            elseif ($rule.from.member -contains $outsideZone){
+                #inbound
+                write-host "$($rule.'@name') , $($rule.from.member) to $($rule.to.member)" -ForegroundColor Red
+                $body=[pscustomobject]@{entry=$rule}
+                $body.entry | Add-Member -MemberType NoteProperty -Name "profile-setting" -Value @{} -Force
+
+                if ($null -eq $body.entry.tag){
+                    $body.entry | Add-Member -MemberType NoteProperty -Name "tag" -Value @{member=@("Inbound")}
+                }
+                elseif ($body.entry.tag.member -match "Inbound"){
+                    #tag already added
+                }
+                else{
+                    $body.entry.tag.member=$body.entry.tag.member+"Inbound"
+                }
+
+                $body.entry.'profile-setting'=[PScustomobject]@{group=[PScustomobject]@{member=@($profileGroupInbound)}}
+                processRule -Method put -objPath $prepost -panOSversion $panosversion1 -Pan1 $pan1 -APIargs "location=device-group&device-group=$dg&name=$($rule.'@name')" -body $body
+            }
+            else{
+                #internal
+                write-host "$($rule.'@name') , $($rule.from.member) to $($rule.to.member)" -ForegroundColor yellow
+                $body=[pscustomobject]@{entry=$rule}
+                $body.entry | Add-Member -MemberType NoteProperty -Name "profile-setting" -Value @{} -Force
+
+                if ($null -eq $body.entry.tag){
+                    $body.entry | Add-Member -MemberType NoteProperty -Name "tag" -Value @{member=@("Internal")}
+                }
+                elseif ($body.entry.tag.member -match "Internal"){
+                    #tag already added
+                }
+                else{
+                    $body.entry.tag.member=$body.entry.tag.member+"Internal"
+                }
+
+                $body.entry.'profile-setting'=[PScustomobject]@{group=[PScustomobject]@{member=@($profileGroupInternal)}}
+                processRule -Method put -objPath $prepost -panOSversion $panosversion1 -Pan1 $pan1 -APIargs "location=device-group&device-group=$dg&name=$($rule.'@name')" -body $body
+            }
+        }    
+    }
+}
+
+
+
+
+###
+if ($body.entry.tag -eq $null){
+    write-host "empty tags!"
+}
+
+
+if ($null -eq $body.entry.tag){
+    $body.entry | Add-Member -MemberType NoteProperty -Name "tag" -Value @{member=@("Outbound")}
+}
+elseif ($body.entry.tag.member -match "Outbound"){
+    #tag already added
+}
+else{
+    $body.entry.tag.member=$body.entry.tag.member+"Outbound"
+}
